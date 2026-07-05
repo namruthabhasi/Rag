@@ -123,9 +123,18 @@ const PlatformContext = createContext<PlatformContextProps | undefined>(undefine
 // ============================================================================
 // API helpers
 // ============================================================================
-const API_BASE = import.meta.env.VITE_API_URL || '/api';
+const getApiBase = () => {
+  const envUrl = import.meta.env.VITE_API_URL;
+  if (!envUrl) return '/api';
+  // If the user provided a URL without /api at the end, append it
+  const cleanUrl = envUrl.replace(/\/$/, '');
+  return cleanUrl.endsWith('/api') ? cleanUrl : `${cleanUrl}/api`;
+};
+
+const API_BASE = getApiBase();
 
 async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
+  // path already includes a leading slash, e.g. '/documents'
   const res = await fetch(`${API_BASE}${path}`, init);
   if (!res.ok) {
     let msg = `API error ${res.status}`;
