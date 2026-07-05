@@ -22,8 +22,11 @@ class Settings(BaseSettings):
     top_k: int = 6
     dense_weight: float = 0.6
     bm25_weight: float = 0.4
-    embedding_model: str = "text-embedding-004"   # corrected from "gemini-embedding-2"
+    # gemini-embedding-001 is the correct model for google-genai SDK v1.x (v1beta API)
+    # text-embedding-004 is only available on v1 API, not v1beta used by this SDK
+    embedding_model: str = "gemini-embedding-001"
     llm_model: str = "gemini-2.5-flash"
+    # Using 768 via output_dimensionality (MRL) — keeps Qdrant collection compatible
     embedding_dimensions: int = 768
 
     class Config:

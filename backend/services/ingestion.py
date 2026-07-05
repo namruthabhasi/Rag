@@ -4,7 +4,7 @@ Orchestrates the full document ingestion pipeline:
   1. Parse document text
   2. Chunk into token-sized windows
   3. Extract metadata + identifiers per chunk
-  4. Generate embeddings via Gemini text-embedding-004
+  4. Generate embeddings via gemini-embedding-001 (output_dimensionality=768)
   5. Upsert vectors into Qdrant
   6. Update BM25 index and MetadataStore
 """
@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Dict, List, Any
 
 from google import genai
+from google.genai.types import EmbedContentConfig
 
 from config import get_settings
 from database import get_db
@@ -29,28 +30,38 @@ from services.metadata_extractor import (
 logger = logging.getLogger(__name__)
 _settings = get_settings()
 
+# Singleton Gemini client — reused for all embedding calls
+_gemini_client: genai.Client | None = None
 
-def _get_gemini_client():
-    return genai.Client(api_key=_settings.gemini_api_key)
+
+def _get_gemini_client() -> genai.Client:
+    global _gemini_client
+    if _gemini_client is None:
+        _gemini_client = genai.Client(api_key=_settings.gemini_api_key)
+    return _gemini_client
 
 
 def embed_texts(texts: List[str]) -> List[List[float]]:
     """
-    Generate embeddings for a list of texts using Gemini text-embedding-004.
+    Generate embeddings for a list of texts using gemini-embedding-001.
+    Uses output_dimensionality=768 (MRL) so vectors match the Qdrant collection.
     Batches requests to stay within API limits (max 100 per batch).
     """
     client = _get_gemini_client()
-    embeddings = []
+    embeddings: List[List[float]] = []
     batch_size = 50  # conservative batch size
 
     for i in range(0, len(texts), batch_size):
-        batch = texts[i : i + batch_size]
+        batch = texts[i: i + batch_size]
         response = client.models.embed_content(
             model=_settings.embedding_model,
             contents=batch,
+            config=EmbedContentConfig(
+                output_dimensionality=_settings.embedding_dimensions,
+            ),
         )
         for emb in response.embeddings:
-            embeddings.append(emb.values)
+            embeddings.append(list(emb.values))
 
     return embeddings
 

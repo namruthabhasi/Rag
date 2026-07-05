@@ -18,6 +18,7 @@ import uuid
 from typing import Any, Dict, List, Tuple
 
 from google import genai
+from google.genai.types import EmbedContentConfig
 from services.reranker import rerank as crossencoder_rerank
 
 from config import get_settings
@@ -25,6 +26,16 @@ from database import get_db
 
 logger = logging.getLogger(__name__)
 _settings = get_settings()
+
+# Singleton Gemini client
+_gemini_client: genai.Client | None = None
+
+
+def _get_gemini_client() -> genai.Client:
+    global _gemini_client
+    if _gemini_client is None:
+        _gemini_client = genai.Client(api_key=_settings.gemini_api_key)
+    return _gemini_client
 
 
 # ---------------------------------------------------------------------------
@@ -57,12 +68,15 @@ def detect_identifiers(query: str) -> List[str]:
 # Step 1: Embed the query
 # ---------------------------------------------------------------------------
 def embed_query(query: str) -> List[float]:
-    client = genai.Client(api_key=_settings.gemini_api_key)
+    client = _get_gemini_client()
     response = client.models.embed_content(
         model=_settings.embedding_model,
         contents=[query],
+        config=EmbedContentConfig(
+            output_dimensionality=_settings.embedding_dimensions,
+        ),
     )
-    return response.embeddings[0].values
+    return list(response.embeddings[0].values)
 
 
 # ---------------------------------------------------------------------------
