@@ -71,6 +71,10 @@ class DeleteResponse(BaseModel):
 # ---------------------------------------------------------------------------
 # Health
 # ---------------------------------------------------------------------------
+@app.get("/health")
+async def basic_health():
+    return {"status": "healthy"}
+
 @app.get("/api/health")
 async def health():
     try:
