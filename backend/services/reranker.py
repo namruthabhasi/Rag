@@ -6,37 +6,44 @@ Model: cross-encoder/ms-marco-MiniLM-L-6-v2
   - Runs fully locally on CPU (or GPU if available)
   - No external API keys required
 
-The model is loaded ONCE at import time and reused for all requests.
+The model is loaded ONCE on first use and cached as a singleton.
+If the model fails to load (e.g. download timeout on Railway), reranking
+gracefully falls back to returning candidates sorted by hybrid score.
 """
 import logging
 import time
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Singleton model — loaded once at startup
-# ---------------------------------------------------------------------------
 _MODEL_NAME = "cross-encoder/ms-marco-MiniLM-L-6-v2"
 _reranker = None
+_reranker_failed = False  # set True permanently if load fails
 
 
 def _get_reranker():
-    """Lazily load the CrossEncoder model and cache it."""
-    global _reranker
+    """Lazily load the CrossEncoder model and cache it. Returns None on failure."""
+    global _reranker, _reranker_failed
+    if _reranker_failed:
+        return None
     if _reranker is None:
-        logger.info("Loading CrossEncoder model: %s", _MODEL_NAME)
-        t0 = time.perf_counter()
-        from sentence_transformers import CrossEncoder
-        _reranker = CrossEncoder(_MODEL_NAME)
-        elapsed = round((time.perf_counter() - t0) * 1000)
-        logger.info("CrossEncoder loaded in %dms", elapsed)
+        try:
+            logger.info("Loading CrossEncoder model: %s", _MODEL_NAME)
+            t0 = time.perf_counter()
+            from sentence_transformers import CrossEncoder
+            _reranker = CrossEncoder(_MODEL_NAME)
+            elapsed = round((time.perf_counter() - t0) * 1000)
+            logger.info("CrossEncoder loaded in %dms", elapsed)
+        except Exception as exc:
+            _reranker_failed = True
+            logger.warning(
+                "CrossEncoder model failed to load (%s). "
+                "Reranking will be skipped — hybrid scores used instead.",
+                exc,
+            )
+            return None
     return _reranker
 
-
-# ---------------------------------------------------------------------------
-# Public API
-# ---------------------------------------------------------------------------
 
 def rerank(
     query: str,
@@ -46,35 +53,52 @@ def rerank(
     """
     Rerank candidate chunks using the local CrossEncoder model.
 
-    Args:
-        query:      The user's query string.
-        candidates: List of chunk dicts, each must have a "text" key.
-        top_k:      Number of top results to return.
+    Falls back gracefully to hybrid-score ordering if the model is unavailable.
 
     Returns:
         (reranked_chunks, raw_scores, latency_ms)
-        - reranked_chunks: sorted by cross-encoder score (descending), limited to top_k
-        - raw_scores:      list of {chunkId, score} dicts for the debug panel
-        - latency_ms:      wall-clock time for inference
     """
     if not candidates:
         return [], [], 0
 
     model = _get_reranker()
 
-    # Build (query, passage) pairs for the cross-encoder
+    # ── Fallback: model not available ────────────────────────────────────────
+    if model is None:
+        logger.info("Reranker unavailable — returning top-%d by hybrid score", top_k)
+        sorted_candidates = sorted(
+            candidates,
+            key=lambda c: c.get("hybrid_score", c.get("score", 0)),
+            reverse=True,
+        )[:top_k]
+        raw_scores = [
+            {"chunkId": c["point_id"], "score": round(c.get("hybrid_score", 0), 6)}
+            for c in sorted_candidates
+        ]
+        return sorted_candidates, raw_scores, 0
+
+    # ── Normal path: CrossEncoder inference ──────────────────────────────────
     pairs = [(query, c["text"]) for c in candidates]
 
     t0 = time.perf_counter()
-    scores = model.predict(pairs)          # returns numpy array of floats
+    try:
+        scores = model.predict(pairs)
+    except Exception as exc:
+        logger.warning("CrossEncoder inference failed: %s — falling back", exc)
+        sorted_candidates = sorted(
+            candidates,
+            key=lambda c: c.get("hybrid_score", c.get("score", 0)),
+            reverse=True,
+        )[:top_k]
+        raw_scores = [
+            {"chunkId": c["point_id"], "score": round(c.get("hybrid_score", 0), 6)}
+            for c in sorted_candidates
+        ]
+        return sorted_candidates, raw_scores, 0
+
     latency_ms = round((time.perf_counter() - t0) * 1000)
 
-    # Attach scores and sort descending
-    scored = sorted(
-        zip(scores, candidates),
-        key=lambda x: x[0],
-        reverse=True,
-    )
+    scored = sorted(zip(scores, candidates), key=lambda x: x[0], reverse=True)
 
     reranked: List[Dict[str, Any]] = []
     raw_scores: List[Dict[str, Any]] = []

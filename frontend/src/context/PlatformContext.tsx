@@ -105,7 +105,7 @@ interface PlatformContextProps {
 }
 
 // ============================================================================
-// Upload pipeline steps — for visual feedback only (backend is async)
+// Ingestion stage names — must match backend INGESTION_STAGES exactly
 // ============================================================================
 const UPLOAD_STEPS = [
   'Reading Document',
@@ -126,7 +126,6 @@ const PlatformContext = createContext<PlatformContextProps | undefined>(undefine
 const getApiBase = () => {
   const envUrl = import.meta.env.VITE_API_URL;
   if (!envUrl) return '/api';
-  // If the user provided a URL without /api at the end, append it
   const cleanUrl = envUrl.replace(/\/$/, '');
   return cleanUrl.endsWith('/api') ? cleanUrl : `${cleanUrl}/api`;
 };
@@ -134,7 +133,6 @@ const getApiBase = () => {
 const API_BASE = getApiBase();
 
 async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
-  // path already includes a leading slash, e.g. '/documents'
   const res = await fetch(`${API_BASE}${path}`, init);
   if (!res.ok) {
     let msg = `API error ${res.status}`;
@@ -215,7 +213,6 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
   // ── Reset ──────────────────────────────────────────────────────────────────
   const resetIndex = () => {
-    // Clear local state; actual deletion from backend is done per-document
     setDocuments([]);
     setQueries([]);
     setActiveUploads([]);
@@ -231,92 +228,80 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     const taskId = `upload-${Date.now()}`;
     const ext = (file.name.split('.').pop()?.toUpperCase() ?? 'TXT') as UploadTask['fileType'];
 
-    const newTask: UploadTask = {
-      id: taskId,
-      fileName: file.name,
-      fileSize: file.size,
-      fileType: ext,
-      progress: 0,
-      currentStep: 0,
-      status: 'processing',
-      steps: UPLOAD_STEPS.map((name, i) => ({
-        name,
-        status: i === 0 ? 'running' : 'pending',
-      })),
-    };
+    // Add the task to the UI immediately
+    setActiveUploads((prev) => [
+      {
+        id: taskId,
+        fileName: file.name,
+        fileSize: file.size,
+        fileType: ext,
+        progress: 0,
+        currentStep: 0,
+        status: 'processing',
+        steps: UPLOAD_STEPS.map((name, i) => ({
+          name,
+          status: i === 0 ? 'running' : 'pending',
+        })),
+      },
+      ...prev,
+    ]);
 
-    setActiveUploads((prev) => [newTask, ...prev]);
-
-    // Animate pipeline steps while the real upload happens in parallel
-    let stepIndex = 0;
-
-    // Real upload via FormData
     const formData = new FormData();
     formData.append('file', file);
 
-    const uploadPromise = apiFetch<{ success: boolean; document: Document }>(
-      '/upload',
-      { method: 'POST', body: formData }
-    );
-
-    // Advance animation every ~1.2s until backend responds
-    const interval = setInterval(() => {
-      stepIndex = Math.min(stepIndex + 1, UPLOAD_STEPS.length - 2); // stop before "Completed"
-      setActiveUploads((prev) =>
-        prev.map((t) => {
-          if (t.id !== taskId) return t;
-          return {
-            ...t,
-            currentStep: stepIndex,
-            progress: Math.round((stepIndex / (UPLOAD_STEPS.length - 1)) * 90),
-            steps: UPLOAD_STEPS.map((name, i) => ({
-              name,
-              status: i < stepIndex ? 'completed' : i === stepIndex ? 'running' : 'pending',
-            })),
-          };
-        })
-      );
-    }, 1200);
-
-    uploadPromise
+    // POST the file — backend returns immediately with a processing record
+    apiFetch<{ success: boolean; document: Document }>('/upload', {
+      method: 'POST',
+      body: formData,
+    })
       .then((data) => {
-        clearInterval(interval);
+        const docId = data.document.id;
 
-        // Backend returned immediately with status='processing'.
-        // Add the placeholder document to the list right away so the user sees it.
+        // Add placeholder document to list right away
         setDocuments((prev) => {
-          if (prev.find((d) => d.id === data.document.id)) return prev;
+          if (prev.find((d) => d.id === docId)) return prev;
           return [data.document, ...prev];
         });
 
-        // If it's already indexed (e.g. very small file), complete immediately.
-        if (data.document.status === 'indexed') {
-          setActiveUploads((prev) =>
-            prev.map((t) =>
-              t.id !== taskId
-                ? t
-                : {
-                    ...t,
-                    progress: 100,
-                    currentStep: UPLOAD_STEPS.length - 1,
-                    status: 'completed',
-                    steps: UPLOAD_STEPS.map((name) => ({ name, status: 'completed' as const })),
-                  }
-            )
-          );
-          return;
-        }
-
-        // Otherwise, poll /documents every 3 seconds until status changes.
+        // Poll /api/job/{docId} every 2 seconds for REAL stage-level progress
         const pollInterval = setInterval(async () => {
           try {
-            const docs = await apiFetch<{ documents: Document[] }>('/documents');
-            const updated = docs.documents.find((d) => d.id === data.document.id);
-            if (!updated) return;
+            const job = await apiFetch<{
+              status: string;
+              stage: string;
+              percent: number;
+              error: string | null;
+              stages: { name: string; status: string }[];
+            }>(`/job/${docId}`);
 
-            if (updated.status === 'indexed') {
+            // Build a name→status map from the backend stages array
+            const stageMap: Record<string, 'pending' | 'running' | 'completed' | 'failed'> = {};
+            for (const s of job.stages) {
+              stageMap[s.name] = s.status as 'pending' | 'running' | 'completed' | 'failed';
+            }
+
+            const updatedSteps = UPLOAD_STEPS.map((name) => ({
+              name,
+              status: stageMap[name] ?? 'pending',
+            }));
+
+            const runningIndex = UPLOAD_STEPS.findIndex((name) => stageMap[name] === 'running');
+
+            setActiveUploads((prev) =>
+              prev.map((t) =>
+                t.id !== taskId
+                  ? t
+                  : {
+                      ...t,
+                      progress: job.percent,
+                      currentStep: runningIndex >= 0 ? runningIndex : t.currentStep,
+                      steps: updatedSteps,
+                    }
+              )
+            );
+
+            if (job.status === 'completed') {
               clearInterval(pollInterval);
-              // Update progress to 100%
               setActiveUploads((prev) =>
                 prev.map((t) =>
                   t.id !== taskId
@@ -330,9 +315,9 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({ chil
                       }
                 )
               );
-              // Replace placeholder with the real indexed record
-              setDocuments((prev) => prev.map((d) => (d.id === updated.id ? updated : d)));
-            } else if (updated.status === 'failed') {
+              // Refresh to get the final document record with chunk count
+              refreshDocuments();
+            } else if (job.status === 'failed') {
               clearInterval(pollInterval);
               setActiveUploads((prev) =>
                 prev.map((t) =>
@@ -341,28 +326,34 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({ chil
                     : {
                         ...t,
                         status: 'failed',
-                        error: 'Ingestion failed on the server. Check Railway logs.',
-                        steps: t.steps.map((s) => ({
-                          ...s,
-                          status: s.status === 'running' ? ('failed' as const) : s.status,
-                        })),
+                        error: job.error ?? 'Ingestion failed. Check server logs.',
+                        steps: updatedSteps,
                       }
                 )
               );
-              setDocuments((prev) => prev.map((d) => (d.id === updated.id ? updated : d)));
+              setDocuments((prev) =>
+                prev.map((d) => (d.id === docId ? { ...d, status: 'failed' } : d))
+              );
             }
           } catch {
-            // network blip — keep polling
+            // network blip — keep polling silently
           }
-        }, 3000);
+        }, 2000);
       })
       .catch((err) => {
-        clearInterval(interval);
         setActiveUploads((prev) =>
           prev.map((t) =>
             t.id !== taskId
               ? t
-              : { ...t, status: 'failed', error: String(err), steps: t.steps.map(s => ({ ...s, status: s.status === 'running' ? 'failed' as const : s.status })) }
+              : {
+                  ...t,
+                  status: 'failed',
+                  error: String(err),
+                  steps: t.steps.map((s) => ({
+                    ...s,
+                    status: s.status === 'running' ? ('failed' as const) : s.status,
+                  })),
+                }
           )
         );
         console.error('Upload failed:', err);
@@ -377,7 +368,6 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       body: JSON.stringify({ query: text, mode, top_k: settings.topK }),
     });
 
-    // Save to history with filtering
     const cleaned = text.trim();
     const isMultiLine = cleaned.includes('\n') || cleaned.includes('\r');
     const isDebug =
@@ -391,9 +381,7 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         const deduped = prev.filter(
           (q) => q.query.trim().toLowerCase() !== cleaned.toLowerCase()
         );
-        const displayQuery = cleaned.length > 60
-          ? cleaned.slice(0, 60) + '…'
-          : cleaned;
+        const displayQuery = cleaned.length > 60 ? cleaned.slice(0, 60) + '…' : cleaned;
         return [{ ...result, query: displayQuery }, ...deduped].slice(0, 10);
       });
     }
@@ -407,9 +395,8 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     setDocuments((prev) => prev.filter((d) => d.id !== id));
   };
 
-  // ── Re-index (triggers backend refresh for now) ────────────────────────────
+  // ── Re-index ──────────────────────────────────────────────────────────────
   const reindexDocument = (_id: string) => {
-    // Placeholder: could call a /api/reindex endpoint in a future iteration
     refreshDocuments();
   };
 

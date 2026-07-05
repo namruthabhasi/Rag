@@ -39,6 +39,7 @@ _IDENTIFIER_PATTERNS = [
     r"\bISO[-–]\d+(?:[-–](?:Section[-–])?[\d.]+)?\b",
     r"\bRFC[-–]\d{4}\b",
     r"\bPROD[-–][A-Z0-9]{3,}\b",
+    r"\bEMP[-–]\d{4,}\b",
 ]
 
 

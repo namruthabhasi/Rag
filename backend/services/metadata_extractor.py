@@ -56,6 +56,11 @@ _IDENTIFIER_PATTERNS: List[Dict] = [
         "pattern": r"\bRegulation\s+\([A-Z]+\)\s+\d+/\d+\b",
         "example": "Regulation (EU) 2016/679",
     },
+    {
+        "name": "employee_id",
+        "pattern": r"\bEMP[-–]\d{4,}\b",
+        "example": "EMP-45821",
+    },
 ]
 
 
