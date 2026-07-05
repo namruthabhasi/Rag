@@ -6,7 +6,6 @@ import os
 class Settings(BaseSettings):
     # API Keys
     gemini_api_key: str = ""
-    cohere_api_key: str = ""
     qdrant_url: str = ""
     qdrant_api_key: str = ""
 
@@ -23,7 +22,7 @@ class Settings(BaseSettings):
     top_k: int = 6
     dense_weight: float = 0.6
     bm25_weight: float = 0.4
-    embedding_model: str = "text-embedding-004"
+    embedding_model: str = "gemini-embedding-2"
     llm_model: str = "gemini-2.5-flash"
     embedding_dimensions: int = 768
 

@@ -1,0 +1,6 @@
+PrecisionRAG is a state-of-the-art enterprise search solution.
+It uses a hybrid search pipeline combining dense Qdrant vectors with BM25 sparse retrieval.
+The final results are reranked using a local Hugging Face Cross-Encoder model instead of the Cohere API.
+This ensures all sensitive data remains on your infrastructure without external API latency.
+If you have a support question, please refer to Article 24-B in the administrator handbook.
+The current version of the software is SKU-XP-998.

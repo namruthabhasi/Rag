@@ -22,3 +22,21 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+venv/
+.venv/
+*.egg-info/
+
+# Backend runtime data (do NOT commit — use Qdrant Cloud + external storage in prod)
+backend/qdrant_data/
+backend/uploads/
+backend/bm25_index.pkl
+backend/metadata_store.json
+
+# Secrets
+.env
+backend/.env

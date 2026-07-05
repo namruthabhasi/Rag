@@ -162,7 +162,7 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     bm25Weight: 0.4,
     denseWeight: 0.6,
     topK: 6,
-    reranker: 'Cohere Rerank v3.5',
+    reranker: 'CrossEncoder MiniLM-L-6-v2',
     temperature: 0.2,
     llm: 'Gemini 2.5 Flash',
     database: 'Qdrant',

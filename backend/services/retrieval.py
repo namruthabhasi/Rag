@@ -7,7 +7,7 @@ Query flow:
   3. Dense Retrieval (Qdrant cosine similarity)
   4. Sparse Retrieval (BM25)
   5. Hybrid Fusion via Reciprocal Rank Fusion (RRF)
-  6. Cohere Rerank v3
+  6. CrossEncoder Reranker (local, cross-encoder/ms-marco-MiniLM-L-6-v2)
   7. Context Construction
   8. Gemini 2.5 Flash — Grounded Answer Generation
 """
@@ -17,8 +17,8 @@ import time
 import uuid
 from typing import Any, Dict, List, Tuple
 
-import cohere
 from google import genai
+from services.reranker import rerank as crossencoder_rerank
 
 from config import get_settings
 from database import get_db
@@ -165,39 +165,11 @@ def reciprocal_rank_fusion(
 
 
 # ---------------------------------------------------------------------------
-# Step 5: Cohere Rerank
+# Step 5: CrossEncoder Rerank (local — no external API required)
 # ---------------------------------------------------------------------------
-def cohere_rerank(
-    query: str,
-    candidates: List[Dict[str, Any]],
-    top_k: int,
-) -> Tuple[List[Dict[str, Any]], List[Dict]]:
-    """
-    Rerank candidates using Cohere Rerank v3.
-    Returns (reranked_list, raw_rerank_scores).
-    """
-    if not candidates:
-        return [], []
-
-    co = cohere.ClientV2(api_key=_settings.cohere_api_key)
-    docs = [c["text"] for c in candidates]
-
-    response = co.rerank(
-        model="rerank-v3.5",
-        query=query,
-        documents=docs,
-        top_n=top_k,
-    )
-
-    reranked = []
-    raw_scores = []
-    for r in response.results:
-        item = dict(candidates[r.index])
-        item["rerank_score"] = round(r.relevance_score, 6)
-        reranked.append(item)
-        raw_scores.append({"point_id": item["point_id"], "score": item["rerank_score"]})
-
-    return reranked, raw_scores
+# crossencoder_rerank is imported from services.reranker at module load time.
+# The underlying CrossEncoder model is loaded lazily on first call and cached
+# as a singleton for the lifetime of the process.
 
 
 # ---------------------------------------------------------------------------
@@ -333,7 +305,7 @@ def run_rag_pipeline(
     rerank_scores: List[Dict] = []
     t6 = time.perf_counter()
     if mode == "hybrid-rerank" and fused:
-        fused, rerank_scores = cohere_rerank(query, fused, top_k=top_k)
+        fused, rerank_scores, _ = crossencoder_rerank(query, fused, top_k=top_k)
     else:
         fused = fused[:top_k]
     pipeline_timings["reranking"] = _ms(t6)
@@ -532,7 +504,7 @@ def _build_pipeline_nodes(
             "name": "Cross Encoder Reranking",
             "status": "completed" if mode == "hybrid-rerank" else "skipped",
             "durationMs": timings.get("reranking", 0),
-            "input": f"Cohere Rerank v3.5 on top candidates",
+            "input": "cross-encoder/ms-marco-MiniLM-L-6-v2 on top candidates",
             "output": f"Re-ranked to top {top_k}." if mode == "hybrid-rerank" else "Skipped.",
         },
         {
