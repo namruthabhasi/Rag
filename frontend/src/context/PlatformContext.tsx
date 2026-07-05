@@ -281,21 +281,80 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     uploadPromise
       .then((data) => {
         clearInterval(interval);
-        setActiveUploads((prev) =>
-          prev.map((t) =>
-            t.id !== taskId
-              ? t
-              : {
-                  ...t,
-                  progress: 100,
-                  currentStep: UPLOAD_STEPS.length - 1,
-                  status: 'completed',
-                  steps: UPLOAD_STEPS.map((name) => ({ name, status: 'completed' as const })),
-                }
-          )
-        );
-        // Add the real document returned by backend
-        setDocuments((prev) => [data.document, ...prev]);
+
+        // Backend returned immediately with status='processing'.
+        // Add the placeholder document to the list right away so the user sees it.
+        setDocuments((prev) => {
+          if (prev.find((d) => d.id === data.document.id)) return prev;
+          return [data.document, ...prev];
+        });
+
+        // If it's already indexed (e.g. very small file), complete immediately.
+        if (data.document.status === 'indexed') {
+          setActiveUploads((prev) =>
+            prev.map((t) =>
+              t.id !== taskId
+                ? t
+                : {
+                    ...t,
+                    progress: 100,
+                    currentStep: UPLOAD_STEPS.length - 1,
+                    status: 'completed',
+                    steps: UPLOAD_STEPS.map((name) => ({ name, status: 'completed' as const })),
+                  }
+            )
+          );
+          return;
+        }
+
+        // Otherwise, poll /documents every 3 seconds until status changes.
+        const pollInterval = setInterval(async () => {
+          try {
+            const docs = await apiFetch<{ documents: Document[] }>('/documents');
+            const updated = docs.documents.find((d) => d.id === data.document.id);
+            if (!updated) return;
+
+            if (updated.status === 'indexed') {
+              clearInterval(pollInterval);
+              // Update progress to 100%
+              setActiveUploads((prev) =>
+                prev.map((t) =>
+                  t.id !== taskId
+                    ? t
+                    : {
+                        ...t,
+                        progress: 100,
+                        currentStep: UPLOAD_STEPS.length - 1,
+                        status: 'completed',
+                        steps: UPLOAD_STEPS.map((name) => ({ name, status: 'completed' as const })),
+                      }
+                )
+              );
+              // Replace placeholder with the real indexed record
+              setDocuments((prev) => prev.map((d) => (d.id === updated.id ? updated : d)));
+            } else if (updated.status === 'failed') {
+              clearInterval(pollInterval);
+              setActiveUploads((prev) =>
+                prev.map((t) =>
+                  t.id !== taskId
+                    ? t
+                    : {
+                        ...t,
+                        status: 'failed',
+                        error: 'Ingestion failed on the server. Check Railway logs.',
+                        steps: t.steps.map((s) => ({
+                          ...s,
+                          status: s.status === 'running' ? ('failed' as const) : s.status,
+                        })),
+                      }
+                )
+              );
+              setDocuments((prev) => prev.map((d) => (d.id === updated.id ? updated : d)));
+            }
+          } catch {
+            // network blip — keep polling
+          }
+        }, 3000);
       })
       .catch((err) => {
         clearInterval(interval);

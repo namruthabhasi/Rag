@@ -5,6 +5,7 @@ Serves all retrieval, ingestion, and analytics endpoints.
 import logging
 import tempfile
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -103,8 +104,9 @@ async def upload_file(
     background_tasks: BackgroundTasks = BackgroundTasks(),
 ):
     """
-    Accept a file upload, save it to disk, then run ingestion synchronously.
-    Returns the ingested document record on success.
+    Accept a file upload, save it to a temp location, and immediately return a
+    'processing' document record. Ingestion runs as a background task so the
+    request is not held open (Railway has a 30-second timeout).
     """
     allowed_extensions = {".pdf", ".docx", ".txt", ".csv", ".json"}
     suffix = Path(file.filename or "file").suffix.lower()
@@ -118,7 +120,7 @@ async def upload_file(
     doc_id = str(uuid.uuid4())
     save_path = UPLOAD_DIR / f"{doc_id}{suffix}"
 
-    # Save uploaded file to disk
+    # Save uploaded file to temp disk immediately
     try:
         content = await file.read()
         save_path.write_bytes(content)
@@ -126,23 +128,55 @@ async def upload_file(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to save file: {str(e)}")
 
-    # Run ingestion pipeline
+    # Build a placeholder 'processing' record and register it in the metadata store
+    # so the frontend can see it while ingestion runs in the background.
+    _, _, meta_store = get_db()
+    processing_record = {
+        "id": doc_id,
+        "name": file.filename or save_path.name,
+        "type": suffix.lstrip(".").upper(),
+        "chunksCount": 0,
+        "identifiers": [],
+        "uploadDate": datetime.now(timezone.utc).isoformat(),
+        "status": "processing",
+        "sizeBytes": len(content),
+        "metadata": {},
+        "processingTimeMs": 0,
+    }
+    meta_store.upsert_document(doc_id, processing_record)
+
+    # Schedule real ingestion to run after the response is sent
+    background_tasks.add_task(
+        _run_ingestion_background,
+        save_path=save_path,
+        file_name=file.filename or save_path.name,
+        doc_id=doc_id,
+    )
+
+    return {"success": True, "document": processing_record}
+
+
+def _run_ingestion_background(save_path: Path, file_name: str, doc_id: str):
+    """Run the full ingestion pipeline in the background and update the document status."""
+    _, _, meta_store = get_db()
     try:
         doc_record = ingest_document(
             file_path=save_path,
-            file_name=file.filename or save_path.name,
+            file_name=file_name,
             doc_id=doc_id,
         )
+        # Update the existing record with the fully indexed one
+        meta_store.upsert_document(doc_id, doc_record)
+        logger.info("Background ingestion complete for doc_id=%s", doc_id)
     except Exception as e:
-        # Clean up saved file on failure
+        logger.error("Background ingestion failed for %s: %s", file_name, e)
+        # Mark the document as failed so the frontend can reflect that
+        existing = meta_store.get_document(doc_id) or {}
+        existing["status"] = "failed"
+        existing["error"] = str(e)
+        meta_store.upsert_document(doc_id, existing)
+    finally:
         save_path.unlink(missing_ok=True)
-        logger.error("Ingestion failed for %s: %s", file.filename, e)
-        raise HTTPException(status_code=500, detail=f"Ingestion failed: {str(e)}")
-
-    # Clean up temp file after successful ingestion
-    save_path.unlink(missing_ok=True)
-
-    return {"success": True, "document": doc_record}
 
 
 # ---------------------------------------------------------------------------
