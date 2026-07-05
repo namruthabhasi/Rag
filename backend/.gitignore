@@ -1,0 +1,12 @@
+# .gitignore — PrecisionRAG Backend
+__pycache__/
+*.py[cod]
+*.pyo
+.env
+uploads/
+qdrant_data/
+bm25_index.pkl
+metadata_store.json
+*.log
+.venv/
+venv/

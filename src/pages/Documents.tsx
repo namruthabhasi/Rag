@@ -18,6 +18,18 @@ export const Documents: React.FC = () => {
   const { documents, deleteDocument, reindexDocument } = usePlatform();
   const [searchTerm, setSearchTerm] = useState('');
   const [expandedDocId, setExpandedDocId] = useState<string | null>(null);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+
+  const handleDelete = async (id: string) => {
+    setDeletingId(id);
+    try {
+      await deleteDocument(id);
+    } catch (e) {
+      console.error('Failed to delete document:', e);
+    } finally {
+      setDeletingId(null);
+    }
+  };
 
   // Filter documents by search
   const filteredDocs = documents.filter((doc) => {
@@ -159,11 +171,12 @@ export const Documents: React.FC = () => {
                               <RefreshCw size={12} className={isProcessing ? 'animate-spin' : ''} />
                             </button>
                             <button
-                              onClick={() => deleteDocument(doc.id)}
+                              onClick={() => handleDelete(doc.id)}
+                              disabled={deletingId === doc.id}
                               title="Delete Document"
-                              className="p-1.5 rounded hover:bg-red-500/[0.04] text-[#9E9E9E] hover:text-red-400 transition-colors cursor-pointer"
+                              className="p-1.5 rounded hover:bg-red-500/[0.04] text-[#9E9E9E] hover:text-red-400 disabled:opacity-40 transition-colors cursor-pointer"
                             >
-                              <Trash2 size={12} />
+                              {deletingId === doc.id ? <Loader2 size={12} className="animate-spin" /> : <Trash2 size={12} />}
                             </button>
                           </div>
                         </td>
@@ -207,7 +220,12 @@ export const Documents: React.FC = () => {
                                       <Hash size={12} className="text-[#D8D3FF]" /> Document Chunks preview
                                     </h4>
                                     <div className="space-y-3 max-h-56 overflow-y-auto pr-1">
-                                      {doc.chunks.map((chunk, idx) => (
+                                      {(doc.chunks ?? []).length === 0 && (
+                                        <p className="text-[11px] text-[#9E9E9E] italic px-2">
+                                          Chunk previews are stored in the vector index. Run a query to retrieve them.
+                                        </p>
+                                      )}
+                                      {(doc.chunks ?? []).map((chunk, idx) => (
                                         <div 
                                           key={chunk.id} 
                                           className="p-3 bg-white/[0.02] hover:bg-white/[0.04] border border-white/[0.05] rounded-lg transition-all"
