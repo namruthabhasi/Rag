@@ -46,12 +46,16 @@ def get_qdrant_client() -> QdrantClient:
 def ensure_collection(client: QdrantClient) -> None:
     """
     Ensure the Qdrant collection exists with the correct vector dimensions.
-    If a collection exists but has mismatched dimensions (e.g. after a model change),
-    it is automatically deleted and recreated so uploads never fail silently.
+
+    Safety contract:
+    - A parse / network error during dimension inspection NEVER deletes the collection.
+    - The collection is only deleted-and-recreated when we can POSITIVELY confirm
+      the stored vector size differs from settings.embedding_dimensions.
+    - If the collection does not exist at all, it is created fresh.
     """
     import google.genai as _genai_module
     logger.info(
-        "Startup info — google-genai SDK: %s | embedding model: %s | "
+        "Startup — google-genai SDK: %s | embedding model: %s | "
         "embedding dimensions: %d | Qdrant collection: %s",
         getattr(_genai_module, "__version__", "unknown"),
         _settings.embedding_model,
@@ -59,31 +63,71 @@ def ensure_collection(client: QdrantClient) -> None:
         _settings.collection_name,
     )
 
-    existing = {c.name: c for c in client.get_collections().collections}
+    # ── Step 1: Does the collection exist? ───────────────────────────────────
+    try:
+        collections = [c.name for c in client.get_collections().collections]
+    except Exception as exc:
+        logger.error("Could not list Qdrant collections: %s — skipping collection check.", exc)
+        return
 
-    if _settings.collection_name in existing:
-        # Verify dimensions match — recreate if they don't
-        try:
-            info = client.get_collection(_settings.collection_name)
+    if _settings.collection_name not in collections:
+        _create_collection(client)
+        return
+
+    # ── Step 2: Verify dimensions — fail SAFE if we can't parse the response ─
+    existing_size: int | None = None
+    try:
+        info = client.get_collection(_settings.collection_name)
+        # qdrant-client >= 1.14 exposes vectors_config; older builds expose config.params.vectors
+        vectors_config = getattr(info, "vectors_config", None)
+        if vectors_config is not None:
+            # New client API: VectorsConfig object
+            params = vectors_config if not isinstance(vectors_config, dict) else next(iter(vectors_config.values()))
+            existing_size = getattr(params, "size", None)
+        else:
+            # Fallback for older client builds
             existing_size = info.config.params.vectors.size
-            if existing_size != _settings.embedding_dimensions:
-                logger.warning(
-                    "Qdrant collection '%s' has %d dimensions but config requires %d. "
-                    "Recreating collection (all existing vectors will be lost).",
-                    _settings.collection_name, existing_size, _settings.embedding_dimensions,
-                )
-                client.delete_collection(_settings.collection_name)
-                # Fall through to create below
-            else:
-                logger.info(
-                    "Qdrant collection '%s' OK — %d dimensions.",
-                    _settings.collection_name, existing_size,
-                )
-                return
-        except Exception as e:
-            logger.warning("Could not verify collection dimensions: %s. Recreating.", e)
-            client.delete_collection(_settings.collection_name)
+    except Exception as exc:
+        # Pydantic parse error (e.g. strict_mode_config.max_payload_index_count from server 1.18)
+        # or any other unexpected error — DO NOT touch the collection.
+        logger.warning(
+            "Could not read collection '%s' dimensions (client/server version skew?): %s. "
+            "Leaving collection intact.",
+            _settings.collection_name,
+            exc,
+        )
+        return
 
+    if existing_size is None:
+        logger.warning(
+            "Could not determine vector size for collection '%s'. Leaving collection intact.",
+            _settings.collection_name,
+        )
+        return
+
+    if existing_size == _settings.embedding_dimensions:
+        logger.info(
+            "Qdrant collection '%s' OK — %d dimensions.",
+            _settings.collection_name, existing_size,
+        )
+        return
+
+    # ── Step 3: Confirmed dimension mismatch — safe to recreate ──────────────
+    logger.warning(
+        "Qdrant collection '%s' has %d dimensions but config requires %d. "
+        "Recreating (all existing vectors will be lost).",
+        _settings.collection_name, existing_size, _settings.embedding_dimensions,
+    )
+    try:
+        client.delete_collection(_settings.collection_name)
+    except Exception as exc:
+        logger.error("Failed to delete collection '%s': %s", _settings.collection_name, exc)
+        return
+    _create_collection(client)
+
+
+def _create_collection(client: QdrantClient) -> None:
+    """Create the Qdrant collection with the configured vector dimensions."""
     client.create_collection(
         collection_name=_settings.collection_name,
         vectors_config=qdrant_models.VectorParams(
