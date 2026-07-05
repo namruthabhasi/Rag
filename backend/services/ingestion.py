@@ -108,12 +108,19 @@ def ingest_document(
 
     # 6. Upsert into Qdrant
     logger.info("[%s] Upserting %d vectors into Qdrant...", doc_id, len(vectors))
+    upload_date = _now_iso()
+    size_bytes = file_path.stat().st_size
     from qdrant_client.models import PointStruct
     points = [
         PointStruct(
             id=pid,
             vector=vec,
-            payload={**meta, "text": text},
+            payload={
+                **meta,
+                "text": text,
+                "upload_date": upload_date,
+                "size_bytes": size_bytes,
+            },
         )
         for pid, vec, meta, text in zip(point_ids, vectors, chunk_meta_list, chunk_texts)
     ]

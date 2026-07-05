@@ -3,6 +3,7 @@ PrecisionRAG — FastAPI Backend
 Serves all retrieval, ingestion, and analytics endpoints.
 """
 import logging
+import tempfile
 import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -27,8 +28,8 @@ logger = logging.getLogger(__name__)
 
 _settings = get_settings()
 
-# Ensure upload directory exists
-UPLOAD_DIR = Path(_settings.upload_dir)
+# Use system temp directory for uploads — safe on ephemeral filesystems (Railway)
+UPLOAD_DIR = Path(tempfile.gettempdir()) / "rag_uploads"
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
 app = FastAPI(
@@ -137,6 +138,9 @@ async def upload_file(
         save_path.unlink(missing_ok=True)
         logger.error("Ingestion failed for %s: %s", file.filename, e)
         raise HTTPException(status_code=500, detail=f"Ingestion failed: {str(e)}")
+
+    # Clean up temp file after successful ingestion
+    save_path.unlink(missing_ok=True)
 
     return {"success": True, "document": doc_record}
 
