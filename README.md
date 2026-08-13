@@ -1,5 +1,17 @@
 # PrecisionRAG - Intelligent RAG Retrieval System
 
+![Python](https://img.shields.io/badge/Python-3.11+-3776AB?logo=python&logoColor=white)
+![React](https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=black)
+![FastAPI](https://img.shields.io/badge/FastAPI-009688?logo=fastapi&logoColor=white)
+![TypeScript](https://img.shields.io/badge/TypeScript-5-3178C6?logo=typescript&logoColor=white)
+![Gemini](https://img.shields.io/badge/Gemini%20API-4285F4?logo=google&logoColor=white)
+![Qdrant](https://img.shields.io/badge/Qdrant%20Cloud-DC244C)
+![BM25](https://img.shields.io/badge/Retrieval-BM25-orange)
+![Vercel](https://img.shields.io/badge/Frontend-Vercel-black?logo=vercel)
+![Railway](https://img.shields.io/badge/Backend-Railway-purple)
+
+[Live Demo](https://rag-sable-five.vercel.app/) | [API Documentation](https://rag-production-30be.up.railway.app/docs)
+
 A production-ready, full-stack Retrieval-Augmented Generation (RAG) application designed to improve document retrieval by combining semantic search with exact identifier matching. PrecisionRAG is built to handle structured references such as legal article numbers, invoice IDs, employee IDs, product SKUs, and other identifiers that can be difficult for traditional vector search to retrieve accurately.
 
 ## Features
